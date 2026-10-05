@@ -67,3 +67,16 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# WALnut runtime data files (generated at runtime, not committed)
+data/walnut.db
+data/walnut.meta
+data/walnut.wal
+
+# FetchContent / CMake download cache
+_deps/
+
+# Ninja build files
+.ninja_deps
+.ninja_log
+build.ninja
