@@ -60,6 +60,11 @@ set(WALNUT_SOURCES
     src/storage/storage_manager.cpp
     src/buffer/frame.cpp
     src/buffer/buffer_pool.cpp
+    # WAL / Recovery / Index  (Kanak Rawat)
+    src/wal/log_manager.cpp
+    src/wal/recovery_manager.cpp
+    src/wal/checkpointer.cpp
+    src/index/hash_index.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -120,6 +125,11 @@ set(WALNUT_TEST_SOURCES
     tests/storage/test_storage_manager.cpp
     tests/buffer/test_frame.cpp
     tests/buffer/test_buffer_pool.cpp
+    # WAL / Recovery / Index tests  (Kanak Rawat)
+    tests/wal/test_log_manager.cpp
+    tests/wal/test_recovery_manager.cpp
+    tests/wal/test_checkpointer.cpp
+    tests/index/test_hash_index.cpp
 )
 
 add_executable(walnut_tests ${WALNUT_TEST_SOURCES})
