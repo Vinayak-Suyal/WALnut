@@ -65,6 +65,11 @@ set(WALNUT_SOURCES
     src/wal/recovery_manager.cpp
     src/wal/checkpointer.cpp
     src/index/hash_index.cpp
+    # Transaction / locking / deadlock subsystem (Sushmit Rawat)
+    src/txn/transaction_manager.cpp
+    src/txn/lock_manager.cpp
+    src/txn/deadlock_detector.cpp
+    src/txn/concurrent_storage.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -130,6 +135,11 @@ set(WALNUT_TEST_SOURCES
     tests/wal/test_recovery_manager.cpp
     tests/wal/test_checkpointer.cpp
     tests/index/test_hash_index.cpp
+    # Transaction / locking / deadlock tests (Sushmit Rawat)
+    tests/txn/test_transaction.cpp
+    tests/txn/test_lock_manager.cpp
+    tests/txn/test_deadlock_detector.cpp
+    tests/txn/test_concurrent_storage.cpp
 )
 
 add_executable(walnut_tests ${WALNUT_TEST_SOURCES})
