@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstring>
+#include <thread>
 
 namespace fs = std::filesystem;
 
