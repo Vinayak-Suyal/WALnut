@@ -11,8 +11,6 @@
 #include "walnut/common/constants.hpp"
 #include "walnut/common/utils.hpp"
 
-#include <algorithm>
-#include <cstring>
 #include <functional>
 
 namespace walnut {
@@ -38,7 +36,7 @@ std::size_t HashIndex::Hash(const std::string& key) const {
 // Insert
 // ===========================================================================
 
-void HashIndex::Insert(const std::string& key, RecordLocation location) {
+void HashIndex::Insert(const std::string& key, IndexRecordLocation location) {
     std::size_t idx = Hash(key);
     std::unique_lock lock(buckets_[idx].mu);
 
@@ -56,7 +54,7 @@ void HashIndex::Insert(const std::string& key, RecordLocation location) {
 // Lookup
 // ===========================================================================
 
-std::optional<RecordLocation> HashIndex::Lookup(const std::string& key) const {
+std::optional<IndexRecordLocation> HashIndex::Lookup(const std::string& key) const {
     std::size_t idx = Hash(key);
     std::shared_lock lock(buckets_[idx].mu);
 
@@ -92,7 +90,7 @@ bool HashIndex::Delete(const std::string& key) {
 // Update
 // ===========================================================================
 
-bool HashIndex::Update(const std::string& key, RecordLocation new_location) {
+bool HashIndex::Update(const std::string& key, IndexRecordLocation new_location) {
     std::size_t idx = Hash(key);
     std::unique_lock lock(buckets_[idx].mu);
 

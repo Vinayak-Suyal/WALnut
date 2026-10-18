@@ -1,6 +1,9 @@
 // =============================================================================
 // WALnut – Storage / Buffer Module (Vinayak Suyal)
 // tests/storage/test_storage_manager.cpp
+//
+// Schema v2.0 (OSDBMS-V-2026-T038) — updated test suite.
+// Original 18 tests preserved; 12 new tests added for v2 storage methods.
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -37,10 +40,28 @@ protected:
         sm->initialize();
         return sm;
     }
+
+    // Helper: build a fully-populated v2 Item.
+    static Item makeV2Item(const std::string& item_id,
+                           const std::string& host_id,
+                           const std::string& category,
+                           double             starting_price,
+                           const std::string& status = "OPEN") {
+        Item item;
+        item.item_id        = item_id;
+        item.host_id        = host_id;
+        item.title          = "Item " + item_id;
+        item.category       = category;
+        item.condition      = "GOOD";
+        item.starting_price = starting_price;
+        item.status         = status;
+        item.current_bid    = 0.0;
+        return item;
+    }
 };
 
 // ---------------------------------------------------------------------------
-// User tests
+// User tests (original — unchanged)
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, CreateAndFindUser) {
     auto sm = make_sm();
@@ -80,7 +101,7 @@ TEST_F(StorageManagerTest, UserPersistsAcrossRestart) {
 }
 
 // ---------------------------------------------------------------------------
-// Item tests
+// Item tests (original — unchanged)
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, CreateAndGetItem) {
     auto sm = make_sm();
@@ -130,7 +151,7 @@ TEST_F(StorageManagerTest, ItemPersistsAcrossRestart) {
 }
 
 // ---------------------------------------------------------------------------
-// updateItemAfterBid
+// updateItemAfterBid — original + v2 podium tests
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, UpdateItemAfterBidCorrectness) {
     auto sm = make_sm();
@@ -167,8 +188,70 @@ TEST_F(StorageManagerTest, UpdateNonexistentItemThrows) {
                  std::runtime_error);
 }
 
+/// V2: Top-3 podium is populated and maintains descending order.
+TEST_F(StorageManagerTest, TC_STO_V2_01_PodiumMaintainedDescending) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("itm", "host1", "Art", 100.0));
+
+    sm->updateItemAfterBid("itm", 110.0, "u1", 1, 1000);
+    sm->updateItemAfterBid("itm", 130.0, "u2", 2, 2000);
+    sm->updateItemAfterBid("itm", 150.0, "u3", 3, 3000);
+
+    auto item = sm->getItem("itm");
+    ASSERT_TRUE(item.has_value());
+    // Podium: slot 0 = newest/highest (150), slot 1 = 130, slot 2 = 110.
+    EXPECT_EQ(item->top_bid_count, 3u);
+    EXPECT_DOUBLE_EQ(item->top_bids[0].amount, 150.0);
+    EXPECT_DOUBLE_EQ(item->top_bids[1].amount, 130.0);
+    EXPECT_DOUBLE_EQ(item->top_bids[2].amount, 110.0);
+    EXPECT_EQ(item->top_bids[0].user_id, "u3");
+    EXPECT_EQ(item->top_bids[1].user_id, "u2");
+    EXPECT_EQ(item->top_bids[2].user_id, "u1");
+}
+
+/// V2: top_bid_count capped at TOP_BID_COUNT; total_bid_count is uncapped.
+TEST_F(StorageManagerTest, TC_STO_V2_02_PodiumCappedTotalBidCountUncapped) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("itm", "host1", "Art", 100.0));
+
+    for (int i = 1; i <= 5; ++i) {
+        sm->updateItemAfterBid("itm",
+                               100.0 + i * 10.0,
+                               "u" + std::to_string(i),
+                               static_cast<uint64_t>(i),
+                               static_cast<uint64_t>(i * 1000));
+    }
+
+    auto item = sm->getItem("itm");
+    ASSERT_TRUE(item.has_value());
+    EXPECT_EQ(item->top_bid_count,   static_cast<uint32_t>(TOP_BID_COUNT)); // capped at 3
+    EXPECT_EQ(item->total_bid_count, 5u);   // all 5 recorded
+    // Slot 0 must hold the most recent/highest bid.
+    EXPECT_DOUBLE_EQ(item->top_bids[0].amount, 150.0);
+}
+
+/// V2: Podium and total_bid_count persist across restart.
+TEST_F(StorageManagerTest, TC_STO_V2_03_PodiumPersistsAcrossRestart) {
+    {
+        auto sm = make_sm();
+        sm->createItem(makeV2Item("itm", "host1", "Tech", 200.0));
+        sm->updateItemAfterBid("itm", 210.0, "u1", 1, 1000);
+        sm->updateItemAfterBid("itm", 230.0, "u2", 2, 2000);
+        sm->close();
+    }
+    {
+        auto sm = make_sm();
+        auto item = sm->getItem("itm");
+        ASSERT_TRUE(item.has_value());
+        EXPECT_EQ(item->top_bid_count,   2u);
+        EXPECT_EQ(item->total_bid_count, 2u);
+        EXPECT_DOUBLE_EQ(item->top_bids[0].amount, 230.0);
+        EXPECT_DOUBLE_EQ(item->top_bids[1].amount, 210.0);
+    }
+}
+
 // ---------------------------------------------------------------------------
-// closeItem
+// closeItem (original — unchanged)
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, CloseItemSetsStatus) {
     auto sm = make_sm();
@@ -196,7 +279,125 @@ TEST_F(StorageManagerTest, CloseItemPersists) {
 }
 
 // ---------------------------------------------------------------------------
-// Bid tests
+// cancelItem (new v2)
+// ---------------------------------------------------------------------------
+TEST_F(StorageManagerTest, TC_STO_V2_04_CancelItemSetsStatus) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("ring", "host1", "Jewelry", 500.0));
+    sm->cancelItem("ring");
+
+    auto item = sm->getItem("ring");
+    ASSERT_TRUE(item.has_value());
+    EXPECT_EQ(item->status, "CANCEL");
+}
+
+TEST_F(StorageManagerTest, TC_STO_V2_05_CancelItemPersists) {
+    {
+        auto sm = make_sm();
+        sm->createItem(makeV2Item("vase", "host1", "Art", 200.0));
+        sm->cancelItem("vase");
+        sm->close();
+    }
+    {
+        auto sm = make_sm();
+        auto item = sm->getItem("vase");
+        ASSERT_TRUE(item.has_value());
+        EXPECT_EQ(item->status, "CANCEL");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// markUnsoldItem (new v2)
+// ---------------------------------------------------------------------------
+TEST_F(StorageManagerTest, TC_STO_V2_06_MarkUnsoldSetsStatus) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("lamp", "host1", "Home", 50.0));
+    sm->markUnsoldItem("lamp");
+
+    auto item = sm->getItem("lamp");
+    ASSERT_TRUE(item.has_value());
+    EXPECT_EQ(item->status, "UNSOLD");
+}
+
+// ---------------------------------------------------------------------------
+// getItemsWonByUser (new v2)
+// ---------------------------------------------------------------------------
+TEST_F(StorageManagerTest, TC_STO_V2_07_GetItemsWonByUser) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("item-a", "host1", "Art",  100.0));
+    sm->createItem(makeV2Item("item-b", "host1", "Tech", 200.0));
+    sm->createItem(makeV2Item("item-c", "host2", "Art",  50.0));
+
+    // item-a: won by alice (CLOSED)
+    sm->updateItemAfterBid("item-a", 150.0, "alice");
+    sm->closeItem("item-a");
+
+    // item-b: won by bob (CLOSED)
+    sm->updateItemAfterBid("item-b", 250.0, "bob");
+    sm->closeItem("item-b");
+
+    // item-c: still OPEN
+    sm->updateItemAfterBid("item-c", 80.0, "alice");
+
+    auto alice_wins = sm->getItemsWonByUser("alice");
+    ASSERT_EQ(alice_wins.size(), 1u);
+    EXPECT_EQ(alice_wins[0].item_id, "item-a");
+
+    auto bob_wins = sm->getItemsWonByUser("bob");
+    ASSERT_EQ(bob_wins.size(), 1u);
+    EXPECT_EQ(bob_wins[0].item_id, "item-b");
+
+    // Open items are NOT returned even if alice is winning.
+    EXPECT_EQ(sm->getItemsWonByUser("nobody").size(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// getItemsByHost (new v2)
+// ---------------------------------------------------------------------------
+TEST_F(StorageManagerTest, TC_STO_V2_08_GetItemsByHost) {
+    auto sm = make_sm();
+    sm->createItem(makeV2Item("h1-a", "host1", "Art",  100.0));
+    sm->createItem(makeV2Item("h1-b", "host1", "Tech", 200.0));
+    sm->createItem(makeV2Item("h2-a", "host2", "Art",   50.0));
+
+    auto h1_items = sm->getItemsByHost("host1");
+    EXPECT_EQ(h1_items.size(), 2u);
+
+    auto h2_items = sm->getItemsByHost("host2");
+    EXPECT_EQ(h2_items.size(), 1u);
+
+    auto ghost = sm->getItemsByHost("nobody");
+    EXPECT_TRUE(ghost.empty());
+}
+
+// ---------------------------------------------------------------------------
+// updateUser (new v2)
+// ---------------------------------------------------------------------------
+TEST_F(StorageManagerTest, TC_STO_V2_09_UpdateUserPersistsNewFields) {
+    auto sm = make_sm();
+    sm->createUser({"alice", "Alice"});
+
+    // Mutate email, role, password_hash.
+    User updated{"alice", "Alice Wonderland"};
+    updated.email         = "alice@example.com";
+    updated.role          = "HOST";
+    updated.password_hash = "hash1234";
+    sm->updateUser(updated);
+
+    auto found = sm->findUserById("alice");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->email,         "alice@example.com");
+    EXPECT_EQ(found->role,          "HOST");
+    EXPECT_EQ(found->password_hash, "hash1234");
+}
+
+TEST_F(StorageManagerTest, TC_STO_V2_10_UpdateNonexistentUserThrows) {
+    auto sm = make_sm();
+    EXPECT_THROW(sm->updateUser({"ghost", "Ghost"}), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// Bid tests (original — unchanged)
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, InsertBidAssignsMonotonicId) {
     auto sm = make_sm();
@@ -285,7 +486,7 @@ TEST_F(StorageManagerTest, TC_STO_03_BidsAllocateNewPage) {
 }
 
 // ---------------------------------------------------------------------------
-// Empty-id guard
+// Empty-id guard (original — unchanged)
 // ---------------------------------------------------------------------------
 TEST_F(StorageManagerTest, EmptyUserIdThrows) {
     auto sm = make_sm();
@@ -297,4 +498,80 @@ TEST_F(StorageManagerTest, EmptyItemIdThrows) {
     EXPECT_THROW(
         sm->createItem({"", "NoName", 1.0, "OPEN", 0.0, ""}),
         std::invalid_argument);
+}
+
+// ===========================================================================
+// Phase 4: Category Secondary Index Tests
+// ===========================================================================
+
+/// TC_CAT_01: Basic category index lookup.
+///   2 Electronics + 1 Art → correct per-category counts, unknown = empty.
+TEST_F(StorageManagerTest, TC_CAT_01_CategoryIndexLookup) {
+    auto sm = make_sm();
+
+    Item e1 = makeV2Item("e1", "host1", "Electronics", 100.0);
+    Item e2 = makeV2Item("e2", "host1", "Electronics", 200.0);
+    Item a1 = makeV2Item("a1", "host1", "Art",         50.0);
+
+    sm->createItem(e1);
+    sm->createItem(e2);
+    sm->createItem(a1);
+
+    auto elec = sm->getItemsByCategory("Electronics");
+    EXPECT_EQ(elec.size(), 2u);
+
+    auto art = sm->getItemsByCategory("Art");
+    ASSERT_EQ(art.size(), 1u);
+    EXPECT_EQ(art[0].item_id, "a1");
+
+    auto unknown = sm->getItemsByCategory("Unknown");
+    EXPECT_TRUE(unknown.empty());
+}
+
+/// TC_CAT_02: Category index is rebuilt correctly after a StorageManager
+///   restart (close + re-open of the same data directory).
+TEST_F(StorageManagerTest, TC_CAT_02_CategoryIndexPersistsAcrossRestart) {
+    {
+        auto sm = make_sm();
+        sm->createItem(makeV2Item("x1", "host1", "Electronics", 100.0));
+        sm->createItem(makeV2Item("x2", "host1", "Electronics", 150.0));
+        sm->createItem(makeV2Item("x3", "host1", "Art",         75.0));
+        sm->sync();
+        sm->close();
+    }
+
+    // Re-open the same directory.
+    auto sm2 = make_sm();
+
+    auto elec = sm2->getItemsByCategory("Electronics");
+    EXPECT_EQ(elec.size(), 2u);
+
+    auto art = sm2->getItemsByCategory("Art");
+    EXPECT_EQ(art.size(), 1u);
+}
+
+/// TC_CAT_03: Cancelled items remain in the category index (status-filtering
+///   is the caller's responsibility per the spec).
+TEST_F(StorageManagerTest, TC_CAT_03_CategoryIndexAfterCancel) {
+    auto sm = make_sm();
+
+    sm->createItem(makeV2Item("c1", "host1", "Electronics", 100.0));
+    sm->createItem(makeV2Item("c2", "host1", "Electronics", 200.0));
+
+    // Cancel one of them.
+    sm->cancelItem("c1");
+
+    // Both must still appear in the category lookup.
+    auto elec = sm->getItemsByCategory("Electronics");
+    EXPECT_EQ(elec.size(), 2u);
+
+    // Confirm status is correctly reflected when the item is fetched.
+    bool found_cancelled = false;
+    for (const auto& item : elec) {
+        if (item.item_id == "c1") {
+            EXPECT_EQ(item.status, "CANCEL");
+            found_cancelled = true;
+        }
+    }
+    EXPECT_TRUE(found_cancelled);
 }

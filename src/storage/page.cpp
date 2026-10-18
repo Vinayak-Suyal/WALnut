@@ -7,7 +7,6 @@
 #include "walnut/common/utils.hpp"
 #include <cstring>
 #include <stdexcept>
-#include <sstream>
 
 namespace walnut {
 

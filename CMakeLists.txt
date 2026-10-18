@@ -8,7 +8,8 @@ project(WALnut VERSION 0.1.0 LANGUAGES CXX)
 # This CMakeLists.txt builds:
 #   1. walnut_storage  – static library (storage + buffer layer)
 #   2. walnut_demo     – demo executable (src/main.cpp)
-#   3. walnut_tests    – GoogleTest executable for all storage/buffer tests
+#   3. walnut_server   – REST API server  (src/server/server.cpp)
+#   4. walnut_tests    – GoogleTest executable for all storage/buffer tests
 #
 # Usage:
 #   mkdir -p build && cd build
@@ -104,6 +105,20 @@ add_custom_command(TARGET walnut_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:walnut_demo>/data"
     COMMENT "Creating data/ directory for walnut_demo"
+)
+
+# ---------------------------------------------------------------------------
+# walnut_server – REST API server (Phase 5)
+# ---------------------------------------------------------------------------
+add_executable(walnut_server src/server/server.cpp)
+target_include_directories(walnut_server PRIVATE ${WALNUT_INCLUDE_DIR})
+target_link_libraries(walnut_server PRIVATE walnut_storage)
+
+# Ensure data/ and uploads/ directories exist next to the server binary.
+add_custom_command(TARGET walnut_server POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:walnut_server>/data"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:walnut_server>/data/uploads"
+    COMMENT "Creating data/uploads/ directory for walnut_server"
 )
 
 # ---------------------------------------------------------------------------

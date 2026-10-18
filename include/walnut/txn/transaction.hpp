@@ -23,7 +23,8 @@ struct LockInfo {
     LockMode mode;
 };
 
-using UndoAction = std::function<void()>;
+using UndoAction    = std::function<void()>;
+using CommitAction  = std::function<void()>;  ///< Runs AFTER successful commit (e.g. file deletion)
 
 class Transaction {
 public:
@@ -99,6 +100,29 @@ public:
         if (first_error) std::rethrow_exception(first_error);
     }
 
+    /// Register an action that fires AFTER this transaction commits successfully.
+    /// Used for post-commit filesystem mutations (e.g. image file deletion on cancel)
+    /// that must NOT execute if the transaction rolls back.
+    void RegisterCommitAction(CommitAction action) {
+        if (!action) throw std::invalid_argument("Commit action must be callable");
+        std::lock_guard<std::mutex> lock(mu_);
+        commit_actions_.push_back(std::move(action));
+    }
+
+    /// Execute all registered commit actions in registration order.
+    /// Called by TransactionManager::Commit after locks are released.
+    void RunCommitActions() {
+        std::vector<CommitAction> actions;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            actions.swap(commit_actions_);
+        }
+        // Best-effort: run all, swallow individual errors
+        for (auto& fn : actions) {
+            try { fn(); } catch (...) {}
+        }
+    }
+
     void SetWaitingFor(const std::string& resource_id) {
         std::lock_guard<std::mutex> lock(mu_);
         waiting_for_ = resource_id;
@@ -113,7 +137,8 @@ private:
     std::atomic<TransactionState> state_;
     const std::chrono::steady_clock::time_point start_time_;
     std::vector<LockInfo> locks_;
-    std::vector<UndoAction> undo_actions_;
+    std::vector<UndoAction>   undo_actions_;
+    std::vector<CommitAction> commit_actions_;
     std::string waiting_for_;
     mutable std::mutex mu_;
 };

@@ -5,10 +5,12 @@
 
 #include "walnut/storage/file_manager.hpp"
 #include "walnut/common/constants.hpp"
-#include <iostream>
+#include "walnut/wal/log_manager.hpp"
+#include "walnut/wal/recovery_manager.hpp"
 #include <cstring>
 #include <stdexcept>
 #include <filesystem>
+#include <iostream>
 
 namespace walnut {
 
@@ -35,13 +37,35 @@ void FileManager::initialize() {
 
     // Load / create metadata.
     meta_mgr_.load();
+    bool was_unclean = !meta_mgr_.meta().clean_shutdown;
 
-    // Mark dirty (we are now running; Kanak's WAL recovery checks this).
+    // Mark dirty (we are now running).
     meta_mgr_.markDirty();
 
     openDbFile();
 
     initialised_ = true;
+
+    // Automatic ARIES crash recovery if previous shutdown was unclean
+    if (was_unclean) {
+        std::string wal_path = data_dir_ + "/walnut.wal";
+        if (std::filesystem::exists(wal_path)) {
+            try {
+                LogManager log_mgr(wal_path);
+                RecoveryManager rm(log_mgr, *this, meta_mgr_);
+                rm.Recover();
+                auto stats = rm.GetStats();
+                if (stats.records_analyzed > 0) {
+                    std::cout << "[WALnut] Automatic WAL recovery completed ("
+                              << stats.records_analyzed << " records analyzed, "
+                              << stats.records_redone   << " redone, "
+                              << stats.records_undone   << " undone).\n" << std::flush;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[WALnut WARNING] WAL recovery encountered an issue: " << e.what() << "\n" << std::flush;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

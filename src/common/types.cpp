@@ -1,11 +1,5 @@
-// =============================================================================
-// WALnut – Storage / Buffer Module (Vinayak Suyal)
-// src/common/types.cpp
-//
-// Serialisation / deserialisation for User, Item, Bid.
-// All records are fixed-size; see constants.hpp for size definitions.
-// =============================================================================
-
+// WALnut – serialisation / deserialisation  (OSDBMS-V-2026-T038)
+// Binary layouts authoritative in docs/schema-v2-specification.md §3.
 #include "walnut/common/types.hpp"
 #include "walnut/common/constants.hpp"
 #include "walnut/common/utils.hpp"
@@ -14,161 +8,151 @@
 
 namespace walnut {
 
-// ---------------------------------------------------------------------------
-// Helper: checked string copy into a fixed-width char array
-// ---------------------------------------------------------------------------
-static void checkAndCopyStr(const std::string& src, uint8_t* dst,
-                             std::size_t max_len, const char* field_name) {
-    if (src.size() >= max_len) {
+// ---- Internal helpers ---------------------------------------------------
+
+static void copyStr(const std::string& src, uint8_t* dst,
+                    std::size_t len, const char* field) {
+    if (src.size() >= len)
         throw std::invalid_argument(
-            std::string(field_name) + " exceeds max length " +
-            std::to_string(max_len - 1));
-    }
-    utils::safeCopyString(src, reinterpret_cast<char*>(dst), max_len);
+            std::string(field) + " exceeds max length " +
+            std::to_string(len - 1) + " (got " + std::to_string(src.size()) + ")");
+    utils::safeCopyString(src, reinterpret_cast<char*>(dst), len);
 }
 
-// ---------------------------------------------------------------------------
-// User serialisation  (USER_RECORD_SIZE bytes)
-//
-// Layout:
-//   [0  .. 63]  user_id  (MAX_ID_LEN = 64, NUL-terminated)
-//   [64 .. 191] username (MAX_NAME_LEN = 128, NUL-terminated)
-// ---------------------------------------------------------------------------
-void serialiseUser(const User& user, uint8_t* dst) {
-    checkAndCopyStr(user.user_id,  dst,                       MAX_ID_LEN,   "user_id");
-    checkAndCopyStr(user.username, dst + MAX_ID_LEN,          MAX_NAME_LEN, "username");
+static std::string readStr(const uint8_t* src, std::size_t len) {
+    return utils::readCString(reinterpret_cast<const char*>(src), len);
+}
+
+template<typename T>
+static void put(uint8_t* dst, std::size_t& off, const T& val) {
+    std::memcpy(dst + off, &val, sizeof(T)); off += sizeof(T);
+}
+template<typename T>
+static void get(const uint8_t* src, std::size_t& off, T& val) {
+    std::memcpy(&val, src + off, sizeof(T)); off += sizeof(T);
+}
+
+// ---- User  (280 bytes) --------------------------------------------------
+
+void serialiseUser(const User& u, uint8_t* dst) {
+    std::size_t off = 0;
+    auto s = [&](const std::string& v, std::size_t len, const char* f) {
+        copyStr(v, dst + off, len, f); off += len;
+    };
+    s(u.user_id,       MAX_ID_LEN,            "user_id");
+    s(u.username,      MAX_ID_LEN,            "username");
+    s(u.email,         USER_EMAIL_LEN,        "email");
+    s(u.phone,         USER_PHONE_LEN,        "phone");
+    s(u.password_hash, USER_PASSWORD_HASH_LEN,"password_hash");
+    s(u.role,          USER_ROLE_LEN,         "role");
 }
 
 User deserialiseUser(const uint8_t* src) {
-    User u;
-    u.user_id  = utils::readCString(reinterpret_cast<const char*>(src),              MAX_ID_LEN);
-    u.username = utils::readCString(reinterpret_cast<const char*>(src + MAX_ID_LEN), MAX_NAME_LEN);
+    User u; std::size_t off = 0;
+    auto r = [&](std::size_t len) -> std::string {
+        std::string v = readStr(src + off, len); off += len; return v;
+    };
+    u.user_id       = r(MAX_ID_LEN);
+    u.username      = r(MAX_ID_LEN);
+    u.email         = r(USER_EMAIL_LEN);
+    u.phone         = r(USER_PHONE_LEN);
+    u.password_hash = r(USER_PASSWORD_HASH_LEN);
+    u.role          = r(USER_ROLE_LEN);
     return u;
 }
 
-// ---------------------------------------------------------------------------
-// Item serialisation  (ITEM_RECORD_SIZE bytes)
-//
-// Layout:
-//   [0   .. 63 ]  item_id        (MAX_ID_LEN = 64)
-//   [64  .. 191]  title          (MAX_NAME_LEN = 128)
-//   [192 .. 199]  starting_price (double, 8 bytes)
-//   [200 .. 207]  status         (ITEM_STATUS_LEN = 8, NUL-terminated: "OPEN" or "CLOSED")
-//   [208 .. 215]  current_bid    (double, 8 bytes)
-//   [216 .. 279]  current_winner (MAX_ID_LEN = 64)
-//   Total = 280 bytes
-// ---------------------------------------------------------------------------
-static_assert(ITEM_RECORD_SIZE == 64 + 128 + 8 + 8 + 8 + 64,
-              "ITEM_RECORD_SIZE mismatch");
+// ---- TopBid  (112 bytes) ------------------------------------------------
+
+void serialiseTopBid(const TopBid& tb, uint8_t* dst) {
+    std::size_t off = 0;
+    put(dst, off, tb.bid_id);
+    copyStr(tb.user_id, dst + off, MAX_ID_LEN, "TopBid::user_id"); off += MAX_ID_LEN;
+    put(dst, off, tb.amount);
+    put(dst, off, tb.timestamp_ms);
+    std::memset(dst + off, 0, TOP_BID_RESERVED_LEN); off += TOP_BID_RESERVED_LEN;
+}
+
+TopBid deserialiseTopBid(const uint8_t* src) {
+    TopBid tb; std::size_t off = 0;
+    get(src, off, tb.bid_id);
+    tb.user_id = readStr(src + off, MAX_ID_LEN); off += MAX_ID_LEN;
+    get(src, off, tb.amount);
+    get(src, off, tb.timestamp_ms);
+    off += TOP_BID_RESERVED_LEN;
+    return tb;
+}
+
+// ---- Item  (800 bytes) --------------------------------------------------
 
 void serialiseItem(const Item& item, uint8_t* dst) {
     std::size_t off = 0;
-
-    checkAndCopyStr(item.item_id, dst + off, MAX_ID_LEN, "item_id");
-    off += MAX_ID_LEN;
-
-    checkAndCopyStr(item.title, dst + off, MAX_NAME_LEN, "title");
-    off += MAX_NAME_LEN;
-
-    std::memcpy(dst + off, &item.starting_price, sizeof(double));
-    off += sizeof(double);
-
-    checkAndCopyStr(item.status, dst + off, ITEM_STATUS_LEN, "status");
-    off += ITEM_STATUS_LEN;
-
-    std::memcpy(dst + off, &item.current_bid, sizeof(double));
-    off += sizeof(double);
-
-    checkAndCopyStr(item.current_winner, dst + off, MAX_ID_LEN, "current_winner");
-    off += MAX_ID_LEN;
-
-    // Sanity check
-    if (off != ITEM_RECORD_SIZE) {
-        throw std::logic_error("serialiseItem: offset mismatch");
+    auto s = [&](const std::string& v, std::size_t len, const char* f) {
+        copyStr(v, dst + off, len, f); off += len;
+    };
+    s(item.item_id,       ITEM_ID_LEN,       "item_id");
+    s(item.host_id,       ITEM_HOST_ID_LEN,  "host_id");
+    s(item.title,         ITEM_TITLE_LEN,    "title");
+    s(item.category,      ITEM_CATEGORY_LEN, "category");
+    s(item.condition,     ITEM_CONDITION_LEN,"condition");
+    for (std::size_t i = 0; i < ITEM_IMAGE_URL_COUNT; ++i) {
+        s(item.image_urls[i], ITEM_IMAGE_URL_LEN, "image_url");
     }
+    put(dst, off, item.starting_price);
+    s(item.status,        ITEM_STATUS_LEN,   "status");
+    put(dst, off, item.current_bid);
+    s(item.current_winner,ITEM_WINNER_LEN,   "current_winner");
+    put(dst, off, item.end_time_ms);
+    put(dst, off, item.top_bid_count);
+    put(dst, off, item.total_bid_count);
+    for (std::size_t i = 0; i < TOP_BID_COUNT; ++i) {
+        serialiseTopBid(item.top_bids[i], dst + off); off += TOP_BID_SLOT_SIZE;
+    }
+    std::memset(dst + off, 0, ITEM_RESERVED_LEN);
 }
 
 Item deserialiseItem(const uint8_t* src) {
-    Item item;
-    std::size_t off = 0;
-
-    item.item_id = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_ID_LEN);
-    off += MAX_ID_LEN;
-
-    item.title = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_NAME_LEN);
-    off += MAX_NAME_LEN;
-
-    std::memcpy(&item.starting_price, src + off, sizeof(double));
-    off += sizeof(double);
-
-    item.status = utils::readCString(reinterpret_cast<const char*>(src + off), ITEM_STATUS_LEN);
-    off += ITEM_STATUS_LEN;
-
-    std::memcpy(&item.current_bid, src + off, sizeof(double));
-    off += sizeof(double);
-
-    item.current_winner = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_ID_LEN);
-    off += MAX_ID_LEN;
-
+    Item item; std::size_t off = 0;
+    auto r = [&](std::size_t len) -> std::string {
+        std::string v = readStr(src + off, len); off += len; return v;
+    };
+    item.item_id       = r(ITEM_ID_LEN);
+    item.host_id       = r(ITEM_HOST_ID_LEN);
+    item.title         = r(ITEM_TITLE_LEN);
+    item.category      = r(ITEM_CATEGORY_LEN);
+    item.condition     = r(ITEM_CONDITION_LEN);
+    for (std::size_t i = 0; i < ITEM_IMAGE_URL_COUNT; ++i)
+        item.image_urls[i] = r(ITEM_IMAGE_URL_LEN);
+    get(src, off, item.starting_price);
+    item.status        = r(ITEM_STATUS_LEN);
+    get(src, off, item.current_bid);
+    item.current_winner = r(ITEM_WINNER_LEN);
+    get(src, off, item.end_time_ms);
+    get(src, off, item.top_bid_count);
+    get(src, off, item.total_bid_count);
+    for (std::size_t i = 0; i < TOP_BID_COUNT; ++i) {
+        item.top_bids[i] = deserialiseTopBid(src + off); off += TOP_BID_SLOT_SIZE;
+    }
     return item;
 }
 
-// ---------------------------------------------------------------------------
-// Bid serialisation  (BID_RECORD_SIZE bytes)
-//
-// Layout:
-//   [0  .. 7 ]  bid_id   (uint64_t, 8 bytes)
-//   [8  .. 71]  item_id  (MAX_ID_LEN = 64)
-//   [72 .. 135] user_id  (MAX_ID_LEN = 64)
-//   [136.. 143] amount   (double, 8 bytes)
-//   [144.. 175] bid_time (MAX_TIMESTAMP_LEN = 32)
-//   Total = 176 bytes
-// ---------------------------------------------------------------------------
-static_assert(BID_RECORD_SIZE == 8 + 64 + 64 + 8 + 32,
-              "BID_RECORD_SIZE mismatch");
+// ---- Bid  (176 bytes, unchanged from v1.0) ------------------------------
 
 void serialiseBid(const Bid& bid, uint8_t* dst) {
     std::size_t off = 0;
-
-    std::memcpy(dst + off, &bid.bid_id, sizeof(uint64_t));
-    off += sizeof(uint64_t);
-
-    checkAndCopyStr(bid.item_id, dst + off, MAX_ID_LEN, "item_id");
-    off += MAX_ID_LEN;
-
-    checkAndCopyStr(bid.user_id, dst + off, MAX_ID_LEN, "user_id");
-    off += MAX_ID_LEN;
-
-    std::memcpy(dst + off, &bid.amount, sizeof(double));
-    off += sizeof(double);
-
-    checkAndCopyStr(bid.bid_time, dst + off, MAX_TIMESTAMP_LEN, "bid_time");
-    off += MAX_TIMESTAMP_LEN;
-
-    if (off != BID_RECORD_SIZE) {
-        throw std::logic_error("serialiseBid: offset mismatch");
-    }
+    put(dst, off, bid.bid_id);
+    copyStr(bid.item_id,  dst + off, MAX_ID_LEN,        "Bid::item_id");  off += MAX_ID_LEN;
+    copyStr(bid.user_id,  dst + off, MAX_ID_LEN,        "Bid::user_id");  off += MAX_ID_LEN;
+    put(dst, off, bid.amount);
+    copyStr(bid.bid_time, dst + off, MAX_TIMESTAMP_LEN, "Bid::bid_time"); off += MAX_TIMESTAMP_LEN;
 }
 
 Bid deserialiseBid(const uint8_t* src) {
-    Bid bid;
-    std::size_t off = 0;
-
-    std::memcpy(&bid.bid_id, src + off, sizeof(uint64_t));
-    off += sizeof(uint64_t);
-
-    bid.item_id = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_ID_LEN);
-    off += MAX_ID_LEN;
-
-    bid.user_id = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_ID_LEN);
-    off += MAX_ID_LEN;
-
-    std::memcpy(&bid.amount, src + off, sizeof(double));
-    off += sizeof(double);
-
-    bid.bid_time = utils::readCString(reinterpret_cast<const char*>(src + off), MAX_TIMESTAMP_LEN);
-    off += MAX_TIMESTAMP_LEN;
-
+    Bid bid; std::size_t off = 0;
+    get(src, off, bid.bid_id);
+    bid.item_id  = readStr(src + off, MAX_ID_LEN);        off += MAX_ID_LEN;
+    bid.user_id  = readStr(src + off, MAX_ID_LEN);        off += MAX_ID_LEN;
+    get(src, off, bid.amount);
+    bid.bid_time = readStr(src + off, MAX_TIMESTAMP_LEN); off += MAX_TIMESTAMP_LEN;
     return bid;
 }
 

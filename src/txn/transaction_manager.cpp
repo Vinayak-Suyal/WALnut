@@ -60,6 +60,7 @@ void TransactionManager::Commit(Transaction* txn) {
     }
     lock_manager_.ReleaseAllLocks(txn);
     txn->SetState(TransactionState::COMMITTED);
+    txn->RunCommitActions();   // post-commit hooks (e.g. image file deletion on cancel)
     RemoveActive(txn);
 }
 

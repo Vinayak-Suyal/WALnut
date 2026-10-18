@@ -16,7 +16,6 @@
 #include <cstring>
 #include <queue>
 #include <unordered_map>
-#include <iostream>
 #include <climits>
 
 namespace walnut {

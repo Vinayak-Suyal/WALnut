@@ -22,9 +22,9 @@ namespace walnut {
 class FileManager;
 
 // ---------------------------------------------------------------------------
-// RecordLocation – identifies a record's physical position on disk.
+// IndexRecordLocation – identifies a record's physical position on disk.
 // ---------------------------------------------------------------------------
-struct RecordLocation {
+struct IndexRecordLocation {
     uint32_t page_id = 0;
     uint16_t slot_id = 0;
 };
@@ -39,17 +39,17 @@ public:
 
     /// Insert a key → location mapping.
     /// If the key already exists, updates its location.
-    void Insert(const std::string& key, RecordLocation location);
+    void Insert(const std::string& key, IndexRecordLocation location);
 
     /// Look up a key.  Returns std::nullopt if not found.
-    std::optional<RecordLocation> Lookup(const std::string& key) const;
+    std::optional<IndexRecordLocation> Lookup(const std::string& key) const;
 
     /// Delete a key.  Returns true if the key was found and removed.
     bool Delete(const std::string& key);
 
     /// Update the location for an existing key.
     /// Returns true if the key was found and updated.
-    bool Update(const std::string& key, RecordLocation new_location);
+    bool Update(const std::string& key, IndexRecordLocation new_location);
 
     /// Return the total number of entries across all buckets.
     std::size_t Size() const;
@@ -60,8 +60,8 @@ public:
 
 private:
     struct Entry {
-        std::string    key;
-        RecordLocation location;
+        std::string          key;
+        IndexRecordLocation  location;
     };
 
     struct Bucket {

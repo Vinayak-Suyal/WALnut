@@ -80,3 +80,10 @@ _deps/
 .ninja_deps
 .ninja_log
 build.ninja
+
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Local documentation
+docs/

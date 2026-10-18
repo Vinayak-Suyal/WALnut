@@ -8,13 +8,11 @@
 #include "walnut/index/hash_index.hpp"
 #include "walnut/storage/file_manager.hpp"
 #include "walnut/common/constants.hpp"
-#include "walnut/common/types.hpp"
 
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <thread>
 #include <vector>
-#include <string>
 
 namespace fs = std::filesystem;
 

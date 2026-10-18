@@ -1,12 +1,30 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥜</text></svg>" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="WALnut — A concurrent auction engine with real-time bidding. Built with C++17 and ACID-compliant storage." />
-    <meta name="theme-color" content="#1C1917" />
-    <title>WALnut Auction</title>
+    <title>WALnut – Live Auction House</title>
+    <meta name="description" content="WALnut is a real-time auction engine built on a custom DBMS with Write-Ahead Logging, Strict 2PL, and ARIES recovery." />
+    <meta name="theme-color" content="#101216" />
+    <style>
+      /* Prevent FOUC */
+      html { background: #101216; }
+      body { margin: 0; background: #101216; }
+    </style>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('wn_theme');
+          if (t === 'light' || t === 'dark') {
+            document.documentElement.setAttribute('data-theme', t);
+            if (t === 'light') {
+              document.documentElement.style.background = '#F5F6F8';
+            }
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

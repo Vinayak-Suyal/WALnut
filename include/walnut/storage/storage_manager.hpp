@@ -1,5 +1,5 @@
 // =============================================================================
-// WALnut – Storage / Buffer Module (Vinayak Suyal)
+// WALnut – Storage / Buffer Module
 // include/walnut/storage/storage_manager.hpp
 //
 // StorageManager provides the high-level CRUD API for Users, Items, and Bids.
@@ -7,16 +7,19 @@
 // fast lookups.  The on-disk pages are the source of truth; the in-memory maps
 // are rebuilt from disk at startup.
 //
-// Thread-safety: StorageManager is NOT thread-safe by itself.  External
-// callers (Sushmit's transaction layer) must serialise access, or StorageManager
-// methods must be called while holding an appropriate transaction lock.
+// Schema v2.0 (OSDBMS-V-2026-T038) additions:
+//   - updateItemAfterBid  : extended with bid_id + timestamp_ms for Top-3 podium
+//   - cancelItem          : sets status "CANCEL" (host cancellation path)
+//   - getItemsWonByUser   : relational query – items where current_winner == uid
+//                           and status == "CLOSED"
+//   - getItemsByHost      : relational query – all items where host_id == uid
+//   - updateUser          : persists changes to a user record (credentials, role)
 //
-// Integration points for other team members:
-//   Sushmit – wrap every public method in a transaction; acquire item/user locks
-//             before calling update methods.
-//   Kanak   – call file_manager_.sync() after WAL flush before exposing
-//             fetchPage to the buffer pool.
-//   Suhavi  – use these methods directly from the fixed-operation API.
+// Phase 4 (OSDBMS-V-2026-T038):
+//   - getItemsByCategory  : O(1) category lookup via in-memory secondary index
+//
+// Thread-safety: StorageManager is NOT thread-safe by itself.  The transaction
+// layer (ConcurrentStorageManager) must serialise access via storage_mu_.
 // =============================================================================
 
 #pragma once
@@ -66,6 +69,12 @@ public:
     /// Return the user with the given user_id, or std::nullopt if not found.
     std::optional<User> findUserById(const std::string& user_id) const;
 
+    /// Return all registered users.
+    std::vector<User> getAllUsers() const;
+
+    /// Permanently delete a user from disk and remove from in-memory index.
+    void deleteUser(const std::string& user_id);
+
     // -----------------------------------------------------------------------
     // Items
     // -----------------------------------------------------------------------
@@ -81,15 +90,65 @@ public:
     /// Return all items (scan all ITEMS pages).
     std::vector<Item> getAllItems() const;
 
-    /// Update current_bid and current_winner on an existing item.
+    /// Permanently delete an item from disk and indices.
+    void deleteItem(const std::string& item_id);
+
+    /// Purge all items and bids from disk (keeps users).
+    void purgeItems();
+
+    /// Factory reset: wipe walnut.db, walnut.meta, and re-initialize.
+    void resetDatabase();
+
+    /// Update current_bid, current_winner, and the Top-3 bid podium.
+    /// bid_id and timestamp_ms must be the values assigned by insertBid so that
+    /// the embedded TopBid slot is consistent with the WAL audit trail.
     /// Throws std::runtime_error – if item_id is not found.
     void updateItemAfterBid(const std::string& item_id,
                             double             new_current_bid,
-                            const std::string& winner_user_id);
+                            const std::string& winner_user_id,
+                            uint64_t           bid_id        = 0,
+                            uint64_t           timestamp_ms  = 0);
 
-    /// Set item status to "CLOSED".
+    /// Set item status to "CLOSED" (auction settled with a winner).
     /// Throws std::runtime_error – if item_id is not found.
     void closeItem(const std::string& item_id);
+
+    /// Set item status to "CANCEL" (host-initiated cancellation).
+    /// Throws std::runtime_error – if item_id is not found.
+    void cancelItem(const std::string& item_id);
+
+    /// Set item status to "UNSOLD" (timer expired with no bids).
+    /// Throws std::runtime_error – if item_id is not found.
+    void markUnsoldItem(const std::string& item_id);
+
+    /// Extend the auction end time to new_end_time_ms (soft-close anti-sniping).
+    /// Throws std::runtime_error – if item_id is not found.
+    void extendItemEndTime(const std::string& item_id, uint64_t new_end_time_ms);
+
+    // -----------------------------------------------------------------------
+    // Relational queries (Schema v2.0)
+    // -----------------------------------------------------------------------
+
+    /// Return all CLOSED items whose current_winner matches user_id.
+    /// Used to build the user's "Won Gallery" dashboard tab.
+    std::vector<Item> getItemsWonByUser(const std::string& user_id) const;
+
+    /// Return all items whose host_id matches host_user_id.
+    /// Used to populate the Host Console item listing table.
+    std::vector<Item> getItemsByHost(const std::string& host_user_id) const;
+
+    /// Return all items (any status) belonging to the given category.
+    /// Implemented via the in-memory category_index_ (O(k) where k = category size).
+    /// Returns an empty vector if the category is unknown.
+    std::vector<Item> getItemsByCategory(const std::string& category) const;
+
+    // -----------------------------------------------------------------------
+    // Users (extended)
+    // -----------------------------------------------------------------------
+
+    /// Overwrite the persisted User record with the supplied struct.
+    /// Throws std::runtime_error – if user_id is not found.
+    void updateUser(const User& user);
 
     // -----------------------------------------------------------------------
     // Bids
@@ -142,6 +201,11 @@ private:
     std::unordered_map<std::string,
         std::vector<RecordLocation>> bid_index_;  ///< item_id -> list of locs
 
+    // Secondary index: category -> list of item_ids in that category.
+    // Populated at startup (rebuildIndexes) and maintained by createItem.
+    // Cancelled/unsold items stay in the index; callers filter by status.
+    std::unordered_map<std::string, std::vector<std::string>> category_index_;
+
     // Tracking of "current" page per table type (the page receiving appends).
     uint32_t current_user_page_{UINT32_MAX};  ///< UINT32_MAX = none allocated yet
     uint32_t current_item_page_{UINT32_MAX};
@@ -158,9 +222,6 @@ private:
     /// If the current page is full, allocates a new one.
     uint32_t getOrAllocatePage(uint32_t page_type, std::size_t record_size,
                                uint32_t& current_page_tracker);
-
-    /// Write a modified page back to disk (via file_manager_).
-    void flushPage(uint32_t page_id, const Page& page);
 };
 
 } // namespace walnut

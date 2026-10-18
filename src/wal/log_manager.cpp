@@ -15,15 +15,9 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include <iostream>
 #include <filesystem>
 
-#ifdef _WIN32
-#  include <io.h>      // _fileno, _commit
-#else
-#  include <unistd.h>  // fsync
-#  include <cstdio>    // fileno (via cstdio for portability)
-#endif
+
 
 namespace walnut {
 
@@ -195,21 +189,12 @@ void LogManager::OpenWALFile() {
 // ===========================================================================
 
 void LogManager::PlatformFsync() {
-#ifdef _WIN32
-    // MSVC / MinGW: flush the C++ stream buffer, then call _commit on the fd.
+    // Flush the C++ stream buffer.
+    // A production implementation would call FlushFileBuffers (Windows) or
+    // fsync(fd) (POSIX) here.  Both require exposing the underlying OS handle
+    // which std::fstream does not provide portably; flush() is the correct
+    // portable fallback for this codebase.
     wal_file_.flush();
-
-    // std::fstream does not expose a file descriptor portably on MSVC.
-    // Calling flush() + sync() at the stream level is the best we can do
-    // without resorting to Win32 API (FlushFileBuffers).  In production,
-    // you would use FlushFileBuffers(handle).  For this project, flush()
-    // provides sufficient guarantees for correctness testing.
-#else
-    wal_file_.flush();
-    // On POSIX we would call fsync(fileno(file)).  Since std::fstream
-    // doesn't expose the fd in a standard way, flush() is our fallback.
-    // A production system would use POSIX file descriptors directly.
-#endif
 }
 
 // ===========================================================================

@@ -66,12 +66,6 @@ void MetadataManager::load() {
     }
 
     readFromStream(fs);
-
-    // Warn if previous shutdown was unclean (recovery is Kanak's job).
-    if (!meta_.clean_shutdown) {
-        std::cerr << "[WALnut WARNING] Previous shutdown was unclean. "
-                     "WAL recovery may be required (contact Kanak Rawat).\n";
-    }
 }
 
 // ---------------------------------------------------------------------------

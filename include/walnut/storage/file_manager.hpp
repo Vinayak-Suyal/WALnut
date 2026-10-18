@@ -82,6 +82,9 @@ public:
     MetadataManager& metadataManager() { return meta_mgr_; }
     const MetadataManager& metadataManager() const { return meta_mgr_; }
 
+    /// Data directory path.
+    const std::string& dataDir() const { return data_dir_; }
+
 private:
     std::string      data_dir_;
     std::string      db_path_;

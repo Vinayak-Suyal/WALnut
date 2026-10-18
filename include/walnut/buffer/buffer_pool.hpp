@@ -1,5 +1,5 @@
 // =============================================================================
-// WALnut – Storage / Buffer Module (Vinayak Suyal)
+// WALnut – Storage / Buffer Module
 // include/walnut/buffer/buffer_pool.hpp
 //
 // Thread-safe buffer pool with Clock page-replacement policy.
@@ -10,15 +10,6 @@
 //   pool lock across slow disk operations (but the current simple
 //   implementation holds the lock throughout to keep the logic correct;
 //   a reader-writer lock upgrade is a future optimisation).
-//
-// Integration notes:
-//   Sushmit – transaction layer should call pinPage() before operating on a
-//             page and unpinPage() when done; never assume a page stays in the
-//             pool between calls without pinning.
-//   Kanak   – WAL layer should call flushPage() only after the WAL record for
-//             that page has been flushed (Write-Ahead-Log rule). A hook /
-//             callback can be registered via setPreFlushHook() for this.
-//   Suhavi  – call fetchPage() through StorageManager's CRUD; don't bypass it.
 // =============================================================================
 
 #pragma once
