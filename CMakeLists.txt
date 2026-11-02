@@ -99,6 +99,10 @@ target_link_libraries(walnut_storage PUBLIC Threads::Threads)
 add_executable(walnut_demo src/main.cpp)
 target_link_libraries(walnut_demo PRIVATE walnut_storage)
 
+# Deadlock Detection & Recovery Demonstration Executable (Sushmit Rawat)
+add_executable(walnut_deadlock_demo src/demo_deadlock.cpp)
+target_link_libraries(walnut_deadlock_demo PRIVATE walnut_storage)
+
 # Ensure data/ directory exists next to the demo binary.
 add_custom_command(TARGET walnut_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory

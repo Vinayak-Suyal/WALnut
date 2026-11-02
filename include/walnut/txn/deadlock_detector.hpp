@@ -19,8 +19,10 @@ class TransactionManager;
 class DeadlockDetector {
 public:
     DeadlockDetector(LockManager& lock_manager, TransactionManager& txn_manager,
-                     std::chrono::milliseconds interval_ms = std::chrono::milliseconds(500));
+                     std::chrono::milliseconds interval_ms =
+                         std::chrono::milliseconds(500));
     ~DeadlockDetector();
+
     DeadlockDetector(const DeadlockDetector&) = delete;
     DeadlockDetector& operator=(const DeadlockDetector&) = delete;
 
@@ -32,6 +34,11 @@ private:
     void WorkerLoop();
     std::vector<txn_id_t> FindCycles(
         const std::unordered_map<txn_id_t, std::unordered_set<txn_id_t>>& graph);
+    bool DFS(txn_id_t node,
+             const std::unordered_map<txn_id_t, std::unordered_set<txn_id_t>>& graph,
+             std::unordered_set<txn_id_t>& visited,
+             std::unordered_set<txn_id_t>& rec_stack,
+             std::vector<txn_id_t>& cycle_members);
     txn_id_t SelectVictim(const std::vector<txn_id_t>& cycle_members) const;
 
     LockManager& lock_manager_;

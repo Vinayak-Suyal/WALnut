@@ -18,7 +18,7 @@ class DeadlockDetector;
 
 struct LockRequest {
     txn_id_t txn_id;
-    LockMode mode;
+    LockMode mode;                 // Currently held mode when granted.
     bool granted = false;
     bool upgrading = false;
     LockMode requested_mode = LockMode::SHARED;
@@ -35,17 +35,20 @@ class LockManager {
 public:
     LockManager() = default;
     ~LockManager() = default;
+
     LockManager(const LockManager&) = delete;
     LockManager& operator=(const LockManager&) = delete;
 
     bool AcquireLock(Transaction* txn, const std::string& resource_id, LockMode mode);
     void ReleaseAllLocks(Transaction* txn);
+
     std::unordered_map<txn_id_t, std::unordered_set<txn_id_t>> BuildWaitForGraph();
     void AbortTransaction(txn_id_t txn_id);
     void SetDeadlockDetector(DeadlockDetector* detector);
 
 private:
-    bool IsCompatible(const LockRequestQueue& queue, const LockRequest& request) const;
+    bool IsCompatible(const LockRequestQueue& queue,
+                      const LockRequest& request) const;
     void GrantWaitingRequests(LockRequestQueue& queue);
 
     std::unordered_map<std::string, std::unique_ptr<LockRequestQueue>> lock_table_;
@@ -58,8 +61,11 @@ class TransactionAbortedException : public std::runtime_error {
 public:
     explicit TransactionAbortedException(txn_id_t txn_id)
         : std::runtime_error("Transaction " + std::to_string(txn_id) +
-                             " aborted (deadlock victim)"), txn_id_(txn_id) {}
+                             " aborted (deadlock victim)"),
+          txn_id_(txn_id) {}
+
     txn_id_t GetTxnId() const noexcept { return txn_id_; }
+
 private:
     txn_id_t txn_id_;
 };
