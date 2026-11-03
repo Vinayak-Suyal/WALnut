@@ -67,6 +67,7 @@ set(WALNUT_SOURCES
     src/wal/checkpointer.cpp
     src/index/hash_index.cpp
     # Transaction / locking / deadlock subsystem (Sushmit Rawat)
+    src/txn/transaction.cpp
     src/txn/transaction_manager.cpp
     src/txn/lock_manager.cpp
     src/txn/deadlock_detector.cpp
@@ -106,6 +107,12 @@ add_custom_command(TARGET walnut_demo POST_BUILD
             "$<TARGET_FILE_DIR:walnut_demo>/data"
     COMMENT "Creating data/ directory for walnut_demo"
 )
+
+# ---------------------------------------------------------------------------
+# walnut_deadlock_demo – interactive deadlock detector walkthrough
+# ---------------------------------------------------------------------------
+add_executable(walnut_deadlock_demo tests/txn/deadlock_demo.cpp)
+target_link_libraries(walnut_deadlock_demo PRIVATE walnut_storage)
 
 # ---------------------------------------------------------------------------
 # walnut_server – REST API server (Phase 5)
