@@ -513,5 +513,43 @@ TEST_F(RecoveryTest, TC_REC_09_InvalidRedoOffset) {
     EXPECT_EQ(page.dataRegion()[0], 0x00);
 }
 
+TEST_F(RecoveryTest, TC_REC_10_InvalidUndoOffset) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 10;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 10;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = PAGE_DATA_SIZE + 1;
+    update.length = 2;
+    update.before_image = {0x00, 0x00};
+    update.after_image = {0xAA, 0xBB};
+    lm.AppendLogRecord(update);
+
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    EXPECT_EQ(rm.GetStats().records_undone, 0u);
+
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[0], 0x00);
+}
+
 } // namespace
 } // namespace walnut
