@@ -257,6 +257,11 @@ void RecoveryManager::ApplyRedo(const LogRecord& record) {
 }
 
 void RecoveryManager::ApplyUndo(const LogRecord& record) {
+        if (record.offset > PAGE_DATA_SIZE ||
+        record.length > PAGE_DATA_SIZE - record.offset ||
+        record.before_image.size() != record.length) {
+        return;
+    }
     Page page = file_mgr_.readPage(record.page_id);
     std::memcpy(page.dataRegion() + record.offset,
                 record.before_image.data(),
