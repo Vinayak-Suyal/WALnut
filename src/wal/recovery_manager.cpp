@@ -212,6 +212,16 @@ void RecoveryManager::UndoPhase(const std::vector<LogRecord>& log) {
 
         } else if (record.type == LogRecordType::UPDATE) {
             // UNDO this update by applying the before_image.
+                        // Validate update images before attempting undo.
+            if (record.offset > PAGE_DATA_SIZE ||
+                record.length > PAGE_DATA_SIZE - record.offset ||
+                record.before_image.size() != record.length ||
+                record.after_image.size() != record.length) {
+                if (record.prev_lsn != 0) {
+                    undo_list.push({record.prev_lsn, txn_id});
+                }
+                continue;
+            }
             ApplyUndo(record);
             stats_.records_undone++;
 
