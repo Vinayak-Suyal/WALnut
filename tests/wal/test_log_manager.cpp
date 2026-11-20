@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cstring>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -265,6 +266,117 @@ TEST_F(LogManagerTest, TC_WAL_08_PreFlushHookBlocksPageWrite) {
 
     // After the hook, the WAL should be flushed.
     EXPECT_GE(lm.GetFlushedLSN(), 1u);
+}
+
+// ===========================================================================
+// TC_WAL_09: A failed WAL write can be retried without losing records.
+// ===========================================================================
+TEST_F(LogManagerTest, TC_WAL_09_FlushFailureRecovery) {
+    bool fail_once = true;
+
+    LogManager lm(wal_path_, [&fail_once]() {
+        if (fail_once) {
+            fail_once = false;
+            throw std::runtime_error("Simulated WAL disk-write failure");
+        }
+    });
+
+    LogRecord rec;
+    rec.txn_id = 900;
+    rec.type = LogRecordType::BEGIN;
+
+    uint64_t lsn = lm.AppendLogRecord(rec);
+    EXPECT_EQ(lsn, 1u);
+
+    // First flush should fail deliberately.
+    EXPECT_THROW(lm.FlushAll(), std::runtime_error);
+
+    // Failed flush must not report the record as durable.
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Retry should succeed after the injected failure is disabled.
+    EXPECT_NO_THROW(lm.FlushAll());
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+
+    // Verify that the record was not lost.
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].lsn, 1u);
+    EXPECT_EQ(records[0].txn_id, 900u);
+    EXPECT_EQ(records[0].type, LogRecordType::BEGIN);
+
+}
+
+TEST_F(LogManagerTest, TC_WAL_10_RestartRestoresLSN) {
+
+    // First manager writes three records.
+    {
+        LogManager lm(wal_path_);
+
+        for (uint64_t i = 1; i <= 3; ++i) {
+            LogRecord rec;
+            rec.txn_id = 900 + i;
+            rec.type = LogRecordType::BEGIN;
+
+            EXPECT_EQ(lm.AppendLogRecord(rec), i);
+        }
+
+        lm.FlushAll();
+        EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+    }
+
+    // Second manager reopens the same WAL file.
+    LogManager lm(wal_path_);
+
+    LogRecord rec;
+    rec.txn_id = 904;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+    lm.FlushAll();
+
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 4u);
+    EXPECT_EQ(records.back().lsn, 4u);
+}
+
+TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
+    bool fail_once = true;
+
+    LogManager lm(
+        wal_path_,
+        {},
+        [&fail_once](size_t total_bytes) -> size_t {
+            if (fail_once) {
+                fail_once = false;
+                return total_bytes / 2;
+            }
+            return total_bytes;
+        }
+    );
+
+    LogRecord rec;
+    rec.txn_id = 911;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 1u);
+
+    // First flush simulates a partial disk write.
+    EXPECT_THROW(lm.FlushAll(), std::runtime_error);
+
+    // Retry should write the complete record.
+    EXPECT_NO_THROW(lm.FlushAll());
+
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].lsn, 1u);
+    EXPECT_EQ(records[0].txn_id, 911u);
+        EXPECT_TRUE(records[0].type == LogRecordType::BEGIN);
+
 }
 
 } // namespace
