@@ -139,9 +139,10 @@ void RecoveryManager::RedoPhase(const std::vector<LogRecord>& log) {
             Page page = file_mgr_.readPage(rec.page_id);
 
             // Bounds check: make sure offset + length fits within the page.
-            if (rec.offset + rec.length > PAGE_DATA_SIZE) {
-                continue;  // Skip malformed record.
-            }
+           if (rec.offset > PAGE_DATA_SIZE ||
+    rec.length > PAGE_DATA_SIZE - rec.offset) {
+    continue;
+}
             if (rec.after_image.size() != rec.length) {
                 continue;  // Skip inconsistent record.
             }
