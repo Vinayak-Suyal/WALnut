@@ -269,6 +269,38 @@ TEST_F(LogManagerTest, TC_WAL_08_PreFlushHookBlocksPageWrite) {
 }
 
 
+TEST_F(LogManagerTest, TC_WAL_16_WALFailureBlocksPageFlush) {
+    bool fail_once = true;
+
+    LogManager lm(wal_path_, [&fail_once]() {
+        if (fail_once) {
+            fail_once = false;
+            throw std::runtime_error("Simulated WAL failure");
+        }
+    });
+
+    LogRecord rec;
+    rec.txn_id = 960;
+    rec.type = LogRecordType::UPDATE;
+    rec.page_id = 7;
+    rec.offset = 0;
+    rec.length = 2;
+    rec.before_image = {0x00, 0x00};
+    rec.after_image = {0xFF, 0xFF};
+
+    lm.AppendLogRecord(rec);
+
+    auto hook = lm.MakePreFlushHook();
+
+    // WAL failure must prevent the page write.
+    EXPECT_THROW(hook(7), std::runtime_error);
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Retry succeeds, allowing the page write.
+    EXPECT_TRUE(hook(7));
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+}
+
 TEST_F(LogManagerTest, TC_WAL_15_UnrelatedPageDoesNotFlushWAL) {
     LogManager lm(wal_path_);
 
