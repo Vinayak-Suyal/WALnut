@@ -268,6 +268,34 @@ TEST_F(LogManagerTest, TC_WAL_08_PreFlushHookBlocksPageWrite) {
     EXPECT_GE(lm.GetFlushedLSN(), 1u);
 }
 
+
+TEST_F(LogManagerTest, TC_WAL_15_UnrelatedPageDoesNotFlushWAL) {
+    LogManager lm(wal_path_);
+
+    LogRecord rec;
+    rec.txn_id = 2;
+    rec.type = LogRecordType::UPDATE;
+    rec.page_id = 5;
+    rec.offset = 0;
+    rec.length = 2;
+    rec.before_image = {0x00, 0x00};
+    rec.after_image = {0xFF, 0xFF};
+
+    lm.AppendLogRecord(rec);
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    auto hook = lm.MakePreFlushHook();
+
+    // Page 6 has no WAL record, so no flush should be needed.
+    EXPECT_TRUE(hook(6));
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Page 5 has the pending WAL record.
+    EXPECT_TRUE(hook(5));
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+}
+
 // ===========================================================================
 // TC_WAL_09: A failed WAL write can be retried without losing records.
 // ===========================================================================
