@@ -253,10 +253,19 @@ void RecoveryManager::UndoPhase(const std::vector<LogRecord>& log) {
 // ===========================================================================
 
 void RecoveryManager::ApplyRedo(const LogRecord& record) {
+    // Validate the page offset and image before modifying the page.
+    if (record.offset > PAGE_DATA_SIZE ||
+        record.length > PAGE_DATA_SIZE - record.offset ||
+        record.after_image.size() != record.length) {
+        return;
+    }
+
     Page page = file_mgr_.readPage(record.page_id);
+
     std::memcpy(page.dataRegion() + record.offset,
                 record.after_image.data(),
                 record.length);
+
     page.updateChecksum();
     file_mgr_.writePage(page);
 }
