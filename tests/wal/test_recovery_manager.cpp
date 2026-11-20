@@ -383,5 +383,51 @@ TEST_F(RecoveryTest, TC_REC_06_MixedCommitAndLoser) {
     EXPECT_EQ(recovered_page.dataRegion()[11], 0x00);
 }
 
+// ===========================================================================
+// TC_REC_07: Malformed UPDATE record is safely skipped during undo.
+// ===========================================================================
+TEST_F(RecoveryTest, TC_REC_07_MalformedUpdateUndo) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 7;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 7;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = 10;
+    update.length = 2;
+
+    // Intentionally malformed: before_image is shorter than length.
+    update.before_image = {0x00};
+    update.after_image = {0xAA, 0xBB};
+
+    lm.AppendLogRecord(update);
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    auto stats = rm.GetStats();
+    EXPECT_EQ(stats.records_undone, 0u);
+
+    // Recovery must not overwrite the page with an invalid before_image.
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[10], 0xAA);
+    EXPECT_EQ(page.dataRegion()[11], 0xBB);
+}
+
 } // namespace
 } // namespace walnut
