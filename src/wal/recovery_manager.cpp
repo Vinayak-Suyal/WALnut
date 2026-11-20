@@ -36,6 +36,11 @@ RecoveryManager::RecoveryManager(LogManager& log_mgr, FileManager& file_mgr,
 // ===========================================================================
 
 void RecoveryManager::Recover() {
+    // Reset state before starting a new recovery run.
+    stats_ = RecoveryStats{};
+    att_.clear();
+    dpt_.clear();
+
     // Read all records from the WAL.
     auto log = log_mgr_.ReadAllRecords();
     if (log.empty()) {
