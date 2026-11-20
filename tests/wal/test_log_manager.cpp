@@ -382,6 +382,42 @@ TEST_F(LogManagerTest, TC_WAL_12_RestartRestoresTransactionLSN) {
     }
 }
 
+
+TEST_F(LogManagerTest, TC_WAL_13_RestartRestoresMultipleTransactions) {
+    {
+        LogManager lm(wal_path_);
+
+        LogRecord rec;
+        rec.txn_id = 930;
+        rec.type = LogRecordType::BEGIN;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 1u);
+
+        rec.txn_id = 931;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 2u);
+
+        rec.txn_id = 930;
+        rec.type = LogRecordType::COMMIT;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 3u);
+
+        rec.txn_id = 931;
+        rec.type = LogRecordType::COMMIT;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+
+        lm.FlushAll();
+
+        EXPECT_EQ(lm.GetLastLSN(930), 3u);
+        EXPECT_EQ(lm.GetLastLSN(931), 4u);
+    }
+
+    // Reopen and verify each transaction retains its own last LSN.
+    {
+        LogManager lm(wal_path_);
+
+        EXPECT_EQ(lm.GetLastLSN(930), 3u);
+        EXPECT_EQ(lm.GetLastLSN(931), 4u);
+    }
+}
+
 TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
     bool fail_once = true;
 
