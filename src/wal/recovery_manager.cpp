@@ -37,7 +37,7 @@ RecoveryManager::RecoveryManager(LogManager& log_mgr, FileManager& file_mgr,
 
 void RecoveryManager::Recover() {
     // Reset state before starting a new recovery run.
-    stats_ = RecoveryStats{};
+   stats_ = RecoveryStats{};
     att_.clear();
     dpt_.clear();
 
