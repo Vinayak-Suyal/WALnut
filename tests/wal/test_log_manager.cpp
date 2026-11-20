@@ -454,5 +454,20 @@ TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
 
 }
 
+TEST_F(LogManagerTest, TC_WAL_14_UnknownTransactionReturnsZero) {
+    LogManager lm(wal_path_);
+
+    EXPECT_EQ(lm.GetLastLSN(9999), 0u);
+
+    LogRecord rec;
+    rec.txn_id = 940;
+    rec.type = LogRecordType::BEGIN;
+
+    uint64_t lsn = lm.AppendLogRecord(rec);
+
+    EXPECT_EQ(lm.GetLastLSN(940), lsn);
+    EXPECT_EQ(lm.GetLastLSN(9999), 0u);
+}
+
 } // namespace
 } // namespace walnut
