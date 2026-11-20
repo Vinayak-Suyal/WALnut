@@ -418,6 +418,41 @@ TEST_F(LogManagerTest, TC_WAL_13_RestartRestoresMultipleTransactions) {
     }
 }
 
+
+TEST_F(LogManagerTest, TC_WAL_14_RestartRestoresCurrentAndFlushedLSN) {
+    {
+        LogManager lm(wal_path_);
+
+        for (uint64_t i = 1; i <= 3; ++i) {
+            LogRecord rec;
+            rec.txn_id = 950;
+            rec.type = LogRecordType::BEGIN;
+            EXPECT_EQ(lm.AppendLogRecord(rec), i);
+        }
+
+        lm.FlushAll();
+    }
+
+    // Reopen the WAL file.
+    LogManager lm(wal_path_);
+
+    EXPECT_EQ(lm.GetCurrentLSN(), 3u);
+    EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+
+    // Verify the next record receives the correct LSN.
+    LogRecord rec;
+    rec.txn_id = 951;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+    EXPECT_EQ(lm.GetCurrentLSN(), 4u);
+    EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+
+    lm.FlushAll();
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 4u);
+}
+
 TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
     bool fail_once = true;
 
