@@ -368,6 +368,19 @@ TEST_F(RecoveryTest, TC_REC_06_MixedCommitAndLoser) {
     EXPECT_EQ(page.dataRegion()[1], 0x11);
     EXPECT_EQ(page.dataRegion()[10], 0x00);
     EXPECT_EQ(page.dataRegion()[11], 0x00);
+        // Run recovery again to verify that completed undo is not repeated.
+    rm.Recover();
+
+    auto second_stats = rm.GetStats();
+    EXPECT_EQ(second_stats.loser_txn_count, 0u);
+    EXPECT_EQ(second_stats.records_undone, 0u);
+
+    // The recovered page must remain unchanged.
+    Page recovered_page = fm.readPage(pid);
+    EXPECT_EQ(recovered_page.dataRegion()[0], 0x11);
+    EXPECT_EQ(recovered_page.dataRegion()[1], 0x11);
+    EXPECT_EQ(recovered_page.dataRegion()[10], 0x00);
+    EXPECT_EQ(recovered_page.dataRegion()[11], 0x00);
 }
 
 } // namespace
