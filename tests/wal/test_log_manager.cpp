@@ -343,6 +343,45 @@ TEST_F(LogManagerTest, TC_WAL_10_RestartRestoresLSN) {
     EXPECT_EQ(records.back().lsn, 4u);
 }
 
+
+TEST_F(LogManagerTest, TC_WAL_12_RestartRestoresTransactionLSN) {
+    uint64_t first_lsn = 0;
+    uint64_t second_lsn = 0;
+
+    // First manager writes two records for the same transaction.
+    {
+        LogManager lm(wal_path_);
+
+        LogRecord rec;
+        rec.txn_id = 920;
+        rec.type = LogRecordType::BEGIN;
+        first_lsn = lm.AppendLogRecord(rec);
+
+        rec.type = LogRecordType::COMMIT;
+        second_lsn = lm.AppendLogRecord(rec);
+
+        lm.FlushAll();
+
+        EXPECT_EQ(lm.GetLastLSN(920), second_lsn);
+    }
+
+    // Reopen WAL and verify transaction history is restored.
+    {
+        LogManager lm(wal_path_);
+
+        EXPECT_EQ(lm.GetLastLSN(920), second_lsn);
+
+        LogRecord rec;
+        rec.txn_id = 920;
+        rec.type = LogRecordType::BEGIN;
+
+        uint64_t next_lsn = lm.AppendLogRecord(rec);
+
+        EXPECT_GT(next_lsn, second_lsn);
+        EXPECT_EQ(lm.GetLastLSN(920), next_lsn);
+    }
+}
+
 TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
     bool fail_once = true;
 
