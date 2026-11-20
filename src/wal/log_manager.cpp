@@ -16,6 +16,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <filesystem>
+#include <utility>
 
 
 
@@ -139,8 +140,13 @@ LogRecord LogRecord::Deserialize(const uint8_t* data, std::size_t len) {
 // LogManager – Construction / Destruction
 // ===========================================================================
 
-LogManager::LogManager(const std::string& wal_path)
-    : wal_path_(wal_path)
+LogManager::LogManager(
+    const std::string& wal_path,
+    WriteFaultHook write_fault_hook,
+    PartialWriteFaultHook partial_write_fault_hook)
+    : wal_path_(wal_path),
+      write_fault_hook_(std::move(write_fault_hook)),
+      partial_write_fault_hook_(std::move(partial_write_fault_hook))
 {
     OpenWALFile();
 }
@@ -160,6 +166,7 @@ LogManager::~LogManager() {
 // OpenWALFile
 // ===========================================================================
 
+
 void LogManager::OpenWALFile() {
     // Ensure parent directory exists.
     auto parent = std::filesystem::path(wal_path_).parent_path();
@@ -167,22 +174,55 @@ void LogManager::OpenWALFile() {
         std::filesystem::create_directories(parent);
     }
 
-    // Open for reading + writing + binary.  Create if absent.
+    // Open existing WAL or create a new one.
     wal_file_.open(wal_path_,
                    std::ios::in | std::ios::out | std::ios::binary);
+
     if (!wal_file_.is_open()) {
-        // File doesn't exist — create it.
         wal_file_.clear();
         wal_file_.open(wal_path_,
                        std::ios::out | std::ios::binary);
         wal_file_.close();
+
         wal_file_.open(wal_path_,
                        std::ios::in | std::ios::out | std::ios::binary);
     }
+
     if (!wal_file_.is_open()) {
-        throw std::runtime_error("LogManager – cannot open WAL file: " + wal_path_);
+        throw std::runtime_error(
+            "LogManager – cannot open WAL file: " + wal_path_);
     }
+
+    // Restore WAL state after restart.
+    std::ifstream wal_input(wal_path_, std::ios::binary);
+
+    if (!wal_input.is_open()) {
+        throw std::runtime_error(
+            "LogManager – cannot read WAL file: " + wal_path_);
+    }
+
+    auto records = ParseRecords(wal_input);
+
+    uint64_t max_lsn = 0;
+
+    for (const auto& rec : records) {
+        max_lsn = std::max(max_lsn, rec.lsn);
+
+        // Restore the latest LSN for each transaction.
+        txn_last_lsn_[rec.txn_id] = rec.lsn;
+
+        // Restore the latest page LSN.
+        if (rec.type == LogRecordType::UPDATE ||
+            rec.type == LogRecordType::CLR) {
+            page_lsn_map_[rec.page_id] = rec.lsn;
+        }
+    }
+
+    // Continue numbering from the next available LSN.
+    current_lsn_.store(max_lsn + 1);
+    flushed_lsn_.store(max_lsn);
 }
+
 
 // ===========================================================================
 // PlatformFsync
@@ -235,46 +275,65 @@ uint64_t LogManager::AppendLogRecord(LogRecord record) {
 // Flush (group commit)
 // ===========================================================================
 
+
 void LogManager::Flush(uint64_t target_lsn) {
     std::unique_lock<std::mutex> lock(buffer_mu_);
 
-    // If already flushed past our target, nothing to do.
     if (flushed_lsn_.load() >= target_lsn) {
         return;
     }
 
-    // If another thread is already flushing, wait for it.
+    // Wait while another thread is flushing.
     while (flush_in_progress_) {
         flush_cv_.wait(lock);
-        if (flushed_lsn_.load() >= target_lsn) {
-            return;
-        }
     }
 
-    // We are the flusher.
+    if (flushed_lsn_.load() >= target_lsn) {
+        return;
+    }
+
     flush_in_progress_ = true;
 
-    // Take ownership of the buffer contents.
+    // Take ownership of the current buffer.
     std::vector<uint8_t> local_buffer = std::move(buffer_);
     buffer_.clear();
+
     uint64_t local_max_lsn = current_lsn_.load() - 1;
 
     lock.unlock();
 
-    // ── DISK I/O (outside the lock!) ──
-    if (!local_buffer.empty()) {
-        WriteBufferToDisk(local_buffer);
-        PlatformFsync();
+    // Perform disk I/O outside the lock.
+    try {
+        if (!local_buffer.empty()) {
+            WriteBufferToDisk(local_buffer);
+            PlatformFsync();
+        }
+    }
+    catch (...) {
+        lock.lock();
+
+        // Restore failed records before newer buffered records.
+        local_buffer.insert(
+            local_buffer.end(),
+            buffer_.begin(),
+            buffer_.end()
+        );
+
+        buffer_.swap(local_buffer);
+
+        flush_in_progress_ = false;
+        flush_cv_.notify_all();
+
+        throw;
     }
 
-    // Update flushed_lsn.
-    flushed_lsn_.store(local_max_lsn);
-
-    // Wake up all threads waiting for a flush.
     lock.lock();
+
+    flushed_lsn_.store(local_max_lsn);
     flush_in_progress_ = false;
     flush_cv_.notify_all();
 }
+
 
 void LogManager::FlushAll() {
     uint64_t target = current_lsn_.load() - 1;
@@ -287,41 +346,101 @@ void LogManager::FlushAll() {
 // WriteBufferToDisk
 // ===========================================================================
 
-void LogManager::WriteBufferToDisk(const std::vector<uint8_t>& data) {
-    wal_file_.seekp(0, std::ios::end);
-    wal_file_.write(reinterpret_cast<const char*>(data.data()),
-                    static_cast<std::streamsize>(data.size()));
-    if (!wal_file_.good()) {
-        throw std::runtime_error("LogManager – write to WAL failed");
+
+
+
+void LogManager::WriteBufferToDisk(
+    const std::vector<uint8_t>& data) {
+
+    // Existing failure hook.
+    if (write_fault_hook_) {
+        write_fault_hook_();
     }
-}
 
-// ===========================================================================
-// Queries
-// ===========================================================================
+    // Save original WAL file size.
+    const auto original_size =
+        std::filesystem::file_size(wal_path_);
 
-uint64_t LogManager::GetFlushedLSN() const {
-    return flushed_lsn_.load();
-}
+    try {
+        wal_file_.clear();
+        wal_file_.seekp(0, std::ios::end);
 
-uint64_t LogManager::GetCurrentLSN() const {
-    return current_lsn_.load() - 1;
-}
+        // Partial-write fault injection.
+        if (partial_write_fault_hook_) {
+            size_t bytes_to_write =
+                partial_write_fault_hook_(data.size());
 
-uint64_t LogManager::GetLastLSN(uint64_t txn_id) const {
-    std::lock_guard<std::mutex> lock(buffer_mu_);
-    auto it = txn_last_lsn_.find(txn_id);
-    return (it != txn_last_lsn_.end()) ? it->second : 0;
-}
+            if (bytes_to_write > data.size()) {
+                throw std::runtime_error(
+                    "Invalid partial-write size");
+            }
 
-// ===========================================================================
-// TrackPageLSN
-// ===========================================================================
+            if (bytes_to_write < data.size()) {
+                if (bytes_to_write > 0) {
+                    wal_file_.write(
+                        reinterpret_cast<const char*>(data.data()),
+                        static_cast<std::streamsize>(bytes_to_write)
+                    );
 
-void LogManager::TrackPageLSN(uint32_t page_id, uint64_t lsn) {
-    std::lock_guard<std::mutex> lock(buffer_mu_);
-    auto& plsn = page_lsn_map_[page_id];
-    plsn = std::max(plsn, lsn);
+                    wal_file_.flush();
+
+                    if (!wal_file_.good()) {
+                        throw std::runtime_error(
+                            "Partial WAL write failed");
+                    }
+                }
+
+                throw std::runtime_error(
+                    "Simulated partial WAL write failure");
+            }
+        }
+
+        // Normal full write.
+        wal_file_.write(
+            reinterpret_cast<const char*>(data.data()),
+            static_cast<std::streamsize>(data.size())
+        );
+
+        wal_file_.flush();
+
+        if (!wal_file_.good()) {
+            throw std::runtime_error(
+                "LogManager – write to WAL failed");
+        }
+    }
+    catch (...) {
+        // Roll back incomplete bytes.
+        wal_file_.close();
+
+        std::error_code rollback_error;
+
+        std::filesystem::resize_file(
+            wal_path_,
+            original_size,
+            rollback_error
+        );
+
+        if (rollback_error) {
+            throw std::runtime_error(
+                "WAL rollback failed: " +
+                rollback_error.message());
+        }
+
+        // Reopen WAL file.
+        wal_file_.clear();
+
+        wal_file_.open(
+            wal_path_,
+            std::ios::in | std::ios::out | std::ios::binary
+        );
+
+        if (!wal_file_.is_open()) {
+            throw std::runtime_error(
+                "Cannot reopen WAL after rollback");
+        }
+
+        throw;
+    }
 }
 
 // ===========================================================================
@@ -494,6 +613,22 @@ void LogManager::TruncateAfter(uint64_t lsn) {
 
     OpenWALFile();
 }
+// ===========================================================================
+// Queries
+// ===========================================================================
 
+uint64_t LogManager::GetFlushedLSN() const {
+    return flushed_lsn_.load();
+}
+
+uint64_t LogManager::GetCurrentLSN() const {
+    return current_lsn_.load() - 1;
+}
+
+uint64_t LogManager::GetLastLSN(uint64_t txn_id) const {
+    std::lock_guard<std::mutex> lock(buffer_mu_);
+    auto it = txn_last_lsn_.find(txn_id);
+    return (it != txn_last_lsn_.end()) ? it->second : 0;
+}
 } // namespace walnut
 

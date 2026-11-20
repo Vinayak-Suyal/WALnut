@@ -25,8 +25,16 @@ namespace walnut {
 
 class LogManager {
 public:
+    // Test fault-injection hook, invoked immediately before WAL disk writes.
+    using WriteFaultHook = std::function<void()>;
+  using PartialWriteFaultHook =
+    std::function<std::size_t(std::size_t)>;
     /// Construct with the path to the WAL file (e.g. "./data/walnut.wal").
-    explicit LogManager(const std::string& wal_path);
+   explicit LogManager(
+    const std::string& wal_path,
+    WriteFaultHook write_fault_hook = {},
+    PartialWriteFaultHook partial_write_fault_hook = {}
+);
     ~LogManager();
 
     // Non-copyable.
@@ -85,7 +93,9 @@ public:
     void TrackPageLSN(uint32_t page_id, uint64_t lsn);
 
 private:
+PartialWriteFaultHook partial_write_fault_hook_;
     std::string         wal_path_;
+    WriteFaultHook     write_fault_hook_;
     std::fstream        wal_file_;
 
     // WAL buffer (serialized records waiting to be flushed to disk).
