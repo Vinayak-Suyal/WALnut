@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cstring>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -265,6 +266,302 @@ TEST_F(LogManagerTest, TC_WAL_08_PreFlushHookBlocksPageWrite) {
 
     // After the hook, the WAL should be flushed.
     EXPECT_GE(lm.GetFlushedLSN(), 1u);
+}
+
+
+TEST_F(LogManagerTest, TC_WAL_16_WALFailureBlocksPageFlush) {
+    bool fail_once = true;
+
+    LogManager lm(wal_path_, [&fail_once]() {
+        if (fail_once) {
+            fail_once = false;
+            throw std::runtime_error("Simulated WAL failure");
+        }
+    });
+
+    LogRecord rec;
+    rec.txn_id = 960;
+    rec.type = LogRecordType::UPDATE;
+    rec.page_id = 7;
+    rec.offset = 0;
+    rec.length = 2;
+    rec.before_image = {0x00, 0x00};
+    rec.after_image = {0xFF, 0xFF};
+
+    lm.AppendLogRecord(rec);
+
+    auto hook = lm.MakePreFlushHook();
+
+    // WAL failure must prevent the page write.
+    EXPECT_THROW(hook(7), std::runtime_error);
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Retry succeeds, allowing the page write.
+    EXPECT_TRUE(hook(7));
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+}
+
+TEST_F(LogManagerTest, TC_WAL_15_UnrelatedPageDoesNotFlushWAL) {
+    LogManager lm(wal_path_);
+
+    LogRecord rec;
+    rec.txn_id = 2;
+    rec.type = LogRecordType::UPDATE;
+    rec.page_id = 5;
+    rec.offset = 0;
+    rec.length = 2;
+    rec.before_image = {0x00, 0x00};
+    rec.after_image = {0xFF, 0xFF};
+
+    lm.AppendLogRecord(rec);
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    auto hook = lm.MakePreFlushHook();
+
+    // Page 6 has no WAL record, so no flush should be needed.
+    EXPECT_TRUE(hook(6));
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Page 5 has the pending WAL record.
+    EXPECT_TRUE(hook(5));
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+}
+
+// ===========================================================================
+// TC_WAL_09: A failed WAL write can be retried without losing records.
+// ===========================================================================
+TEST_F(LogManagerTest, TC_WAL_09_FlushFailureRecovery) {
+    bool fail_once = true;
+
+    LogManager lm(wal_path_, [&fail_once]() {
+        if (fail_once) {
+            fail_once = false;
+            throw std::runtime_error("Simulated WAL disk-write failure");
+        }
+    });
+
+    LogRecord rec;
+    rec.txn_id = 900;
+    rec.type = LogRecordType::BEGIN;
+
+    uint64_t lsn = lm.AppendLogRecord(rec);
+    EXPECT_EQ(lsn, 1u);
+
+    // First flush should fail deliberately.
+    EXPECT_THROW(lm.FlushAll(), std::runtime_error);
+
+    // Failed flush must not report the record as durable.
+    EXPECT_EQ(lm.GetFlushedLSN(), 0u);
+
+    // Retry should succeed after the injected failure is disabled.
+    EXPECT_NO_THROW(lm.FlushAll());
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 1u);
+
+    // Verify that the record was not lost.
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].lsn, 1u);
+    EXPECT_EQ(records[0].txn_id, 900u);
+    EXPECT_EQ(records[0].type, LogRecordType::BEGIN);
+
+}
+
+TEST_F(LogManagerTest, TC_WAL_10_RestartRestoresLSN) {
+
+    // First manager writes three records.
+    {
+        LogManager lm(wal_path_);
+
+        for (uint64_t i = 1; i <= 3; ++i) {
+            LogRecord rec;
+            rec.txn_id = 900 + i;
+            rec.type = LogRecordType::BEGIN;
+
+            EXPECT_EQ(lm.AppendLogRecord(rec), i);
+        }
+
+        lm.FlushAll();
+        EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+    }
+
+    // Second manager reopens the same WAL file.
+    LogManager lm(wal_path_);
+
+    LogRecord rec;
+    rec.txn_id = 904;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+    lm.FlushAll();
+
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 4u);
+    EXPECT_EQ(records.back().lsn, 4u);
+}
+
+
+TEST_F(LogManagerTest, TC_WAL_12_RestartRestoresTransactionLSN) {
+    uint64_t first_lsn = 0;
+    uint64_t second_lsn = 0;
+
+    // First manager writes two records for the same transaction.
+    {
+        LogManager lm(wal_path_);
+
+        LogRecord rec;
+        rec.txn_id = 920;
+        rec.type = LogRecordType::BEGIN;
+        first_lsn = lm.AppendLogRecord(rec);
+
+        rec.type = LogRecordType::COMMIT;
+        second_lsn = lm.AppendLogRecord(rec);
+
+        lm.FlushAll();
+
+        EXPECT_EQ(lm.GetLastLSN(920), second_lsn);
+    }
+
+    // Reopen WAL and verify transaction history is restored.
+    {
+        LogManager lm(wal_path_);
+
+        EXPECT_EQ(lm.GetLastLSN(920), second_lsn);
+
+        LogRecord rec;
+        rec.txn_id = 920;
+        rec.type = LogRecordType::BEGIN;
+
+        uint64_t next_lsn = lm.AppendLogRecord(rec);
+
+        EXPECT_GT(next_lsn, second_lsn);
+        EXPECT_EQ(lm.GetLastLSN(920), next_lsn);
+    }
+}
+
+
+TEST_F(LogManagerTest, TC_WAL_13_RestartRestoresMultipleTransactions) {
+    {
+        LogManager lm(wal_path_);
+
+        LogRecord rec;
+        rec.txn_id = 930;
+        rec.type = LogRecordType::BEGIN;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 1u);
+
+        rec.txn_id = 931;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 2u);
+
+        rec.txn_id = 930;
+        rec.type = LogRecordType::COMMIT;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 3u);
+
+        rec.txn_id = 931;
+        rec.type = LogRecordType::COMMIT;
+        EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+
+        lm.FlushAll();
+
+        EXPECT_EQ(lm.GetLastLSN(930), 3u);
+        EXPECT_EQ(lm.GetLastLSN(931), 4u);
+    }
+
+    // Reopen and verify each transaction retains its own last LSN.
+    {
+        LogManager lm(wal_path_);
+
+        EXPECT_EQ(lm.GetLastLSN(930), 3u);
+        EXPECT_EQ(lm.GetLastLSN(931), 4u);
+    }
+}
+
+
+TEST_F(LogManagerTest, TC_WAL_14_RestartRestoresCurrentAndFlushedLSN) {
+    {
+        LogManager lm(wal_path_);
+
+        for (uint64_t i = 1; i <= 3; ++i) {
+            LogRecord rec;
+            rec.txn_id = 950;
+            rec.type = LogRecordType::BEGIN;
+            EXPECT_EQ(lm.AppendLogRecord(rec), i);
+        }
+
+        lm.FlushAll();
+    }
+
+    // Reopen the WAL file.
+    LogManager lm(wal_path_);
+
+    EXPECT_EQ(lm.GetCurrentLSN(), 3u);
+    EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+
+    // Verify the next record receives the correct LSN.
+    LogRecord rec;
+    rec.txn_id = 951;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 4u);
+    EXPECT_EQ(lm.GetCurrentLSN(), 4u);
+    EXPECT_EQ(lm.GetFlushedLSN(), 3u);
+
+    lm.FlushAll();
+
+    EXPECT_EQ(lm.GetFlushedLSN(), 4u);
+}
+
+TEST_F(LogManagerTest, TC_WAL_11_PartialWriteRollback) {
+    bool fail_once = true;
+
+    LogManager lm(
+        wal_path_,
+        {},
+        [&fail_once](size_t total_bytes) -> size_t {
+            if (fail_once) {
+                fail_once = false;
+                return total_bytes / 2;
+            }
+            return total_bytes;
+        }
+    );
+
+    LogRecord rec;
+    rec.txn_id = 911;
+    rec.type = LogRecordType::BEGIN;
+
+    EXPECT_EQ(lm.AppendLogRecord(rec), 1u);
+
+    // First flush simulates a partial disk write.
+    EXPECT_THROW(lm.FlushAll(), std::runtime_error);
+
+    // Retry should write the complete record.
+    EXPECT_NO_THROW(lm.FlushAll());
+
+    auto records = lm.ReadAllRecords();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].lsn, 1u);
+    EXPECT_EQ(records[0].txn_id, 911u);
+        EXPECT_TRUE(records[0].type == LogRecordType::BEGIN);
+
+}
+
+TEST_F(LogManagerTest, TC_WAL_14_UnknownTransactionReturnsZero) {
+    LogManager lm(wal_path_);
+
+    EXPECT_EQ(lm.GetLastLSN(9999), 0u);
+
+    LogRecord rec;
+    rec.txn_id = 940;
+    rec.type = LogRecordType::BEGIN;
+
+    uint64_t lsn = lm.AppendLogRecord(rec);
+
+    EXPECT_EQ(lm.GetLastLSN(940), lsn);
+    EXPECT_EQ(lm.GetLastLSN(9999), 0u);
 }
 
 } // namespace

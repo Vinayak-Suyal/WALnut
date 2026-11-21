@@ -8,11 +8,13 @@
 #pragma once
 
 #include "walnut/wal/log_manager.hpp"
+#include "walnut/wal/log_record.hpp"
 #include "walnut/storage/file_manager.hpp"
 #include "walnut/storage/metadata.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <cstdint>
+#include <vector>
 
 namespace walnut {
 

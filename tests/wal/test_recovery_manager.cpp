@@ -368,6 +368,187 @@ TEST_F(RecoveryTest, TC_REC_06_MixedCommitAndLoser) {
     EXPECT_EQ(page.dataRegion()[1], 0x11);
     EXPECT_EQ(page.dataRegion()[10], 0x00);
     EXPECT_EQ(page.dataRegion()[11], 0x00);
+        // Run recovery again to verify that completed undo is not repeated.
+    rm.Recover();
+
+    auto second_stats = rm.GetStats();
+    EXPECT_EQ(second_stats.loser_txn_count, 0u);
+    EXPECT_EQ(second_stats.records_undone, 0u);
+
+    // The recovered page must remain unchanged.
+    Page recovered_page = fm.readPage(pid);
+    EXPECT_EQ(recovered_page.dataRegion()[0], 0x11);
+    EXPECT_EQ(recovered_page.dataRegion()[1], 0x11);
+    EXPECT_EQ(recovered_page.dataRegion()[10], 0x00);
+    EXPECT_EQ(recovered_page.dataRegion()[11], 0x00);
+}
+
+// ===========================================================================
+// TC_REC_07: Malformed UPDATE record is safely skipped during undo.
+// ===========================================================================
+TEST_F(RecoveryTest, TC_REC_07_MalformedUpdateUndo) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 7;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 7;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = 10;
+    update.length = 2;
+
+    // Intentionally malformed: before_image is shorter than length.
+    update.before_image = {0x00};
+    update.after_image = {0xAA, 0xBB};
+
+    lm.AppendLogRecord(update);
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    auto stats = rm.GetStats();
+    EXPECT_EQ(stats.records_undone, 0u);
+
+    // Recovery must not overwrite the page with an invalid before_image.
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[10], 0xAA);
+    EXPECT_EQ(page.dataRegion()[11], 0xBB);
+}
+
+TEST_F(RecoveryTest, TC_REC_08_MalformedRedoImage) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 8;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 8;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = 10;
+    update.length = 2;
+    update.before_image = {0x00, 0x00};
+
+    // Malformed: image size does not match the record length.
+    update.after_image = {0xAA};
+
+    lm.AppendLogRecord(update);
+
+    LogRecord commit;
+    commit.txn_id = 8;
+    commit.type = LogRecordType::COMMIT;
+    lm.AppendLogRecord(commit);
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[10], 0x00);
+    EXPECT_EQ(page.dataRegion()[11], 0x00);
+}
+
+TEST_F(RecoveryTest, TC_REC_09_InvalidRedoOffset) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 9;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 9;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = PAGE_DATA_SIZE + 1;
+    update.length = 2;
+    update.before_image = {0x00, 0x00};
+    update.after_image = {0xAA, 0xBB};
+    lm.AppendLogRecord(update);
+
+    LogRecord commit;
+    commit.txn_id = 9;
+    commit.type = LogRecordType::COMMIT;
+    lm.AppendLogRecord(commit);
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[0], 0x00);
+}
+
+TEST_F(RecoveryTest, TC_REC_10_InvalidUndoOffset) {
+    FileManager fm(test_dir_);
+    fm.initialize();
+
+    uint32_t pid = fm.allocatePage(PAGE_TYPE_BIDS);
+
+    LogManager lm(wal_path_);
+
+    LogRecord begin;
+    begin.txn_id = 10;
+    begin.type = LogRecordType::BEGIN;
+    lm.AppendLogRecord(begin);
+
+    LogRecord update;
+    update.txn_id = 10;
+    update.type = LogRecordType::UPDATE;
+    update.page_id = pid;
+    update.offset = PAGE_DATA_SIZE + 1;
+    update.length = 2;
+    update.before_image = {0x00, 0x00};
+    update.after_image = {0xAA, 0xBB};
+    lm.AppendLogRecord(update);
+
+    lm.FlushAll();
+
+    MetadataManager mm(test_dir_ + "/walnut.meta");
+    mm.load();
+    mm.meta().checkpoint_lsn = 0;
+
+    RecoveryManager rm(lm, fm, mm);
+    EXPECT_NO_THROW(rm.Recover());
+
+    EXPECT_EQ(rm.GetStats().records_undone, 0u);
+
+    Page page = fm.readPage(pid);
+    EXPECT_EQ(page.dataRegion()[0], 0x00);
 }
 
 } // namespace

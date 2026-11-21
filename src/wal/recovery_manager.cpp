@@ -36,6 +36,11 @@ RecoveryManager::RecoveryManager(LogManager& log_mgr, FileManager& file_mgr,
 // ===========================================================================
 
 void RecoveryManager::Recover() {
+    // Reset state before starting a new recovery run.
+   stats_ = RecoveryStats{};
+    att_.clear();
+    dpt_.clear();
+
     // Read all records from the WAL.
     auto log = log_mgr_.ReadAllRecords();
     if (log.empty()) {
@@ -139,9 +144,10 @@ void RecoveryManager::RedoPhase(const std::vector<LogRecord>& log) {
             Page page = file_mgr_.readPage(rec.page_id);
 
             // Bounds check: make sure offset + length fits within the page.
-            if (rec.offset + rec.length > PAGE_DATA_SIZE) {
-                continue;  // Skip malformed record.
-            }
+           if (rec.offset > PAGE_DATA_SIZE ||
+    rec.length > PAGE_DATA_SIZE - rec.offset) {
+    continue;
+}
             if (rec.after_image.size() != rec.length) {
                 continue;  // Skip inconsistent record.
             }
@@ -206,6 +212,16 @@ void RecoveryManager::UndoPhase(const std::vector<LogRecord>& log) {
 
         } else if (record.type == LogRecordType::UPDATE) {
             // UNDO this update by applying the before_image.
+                        // Validate update images before attempting undo.
+            if (record.offset > PAGE_DATA_SIZE ||
+                record.length > PAGE_DATA_SIZE - record.offset ||
+                record.before_image.size() != record.length ||
+                record.after_image.size() != record.length) {
+                if (record.prev_lsn != 0) {
+                    undo_list.push({record.prev_lsn, txn_id});
+                }
+                continue;
+            }
             ApplyUndo(record);
             stats_.records_undone++;
 
@@ -247,15 +263,29 @@ void RecoveryManager::UndoPhase(const std::vector<LogRecord>& log) {
 // ===========================================================================
 
 void RecoveryManager::ApplyRedo(const LogRecord& record) {
+    // Validate the page offset and image before modifying the page.
+    if (record.offset > PAGE_DATA_SIZE ||
+        record.length > PAGE_DATA_SIZE - record.offset ||
+        record.after_image.size() != record.length) {
+        return;
+    }
+
     Page page = file_mgr_.readPage(record.page_id);
+
     std::memcpy(page.dataRegion() + record.offset,
                 record.after_image.data(),
                 record.length);
+
     page.updateChecksum();
     file_mgr_.writePage(page);
 }
 
 void RecoveryManager::ApplyUndo(const LogRecord& record) {
+        if (record.offset > PAGE_DATA_SIZE ||
+        record.length > PAGE_DATA_SIZE - record.offset ||
+        record.before_image.size() != record.length) {
+        return;
+    }
     Page page = file_mgr_.readPage(record.page_id);
     std::memcpy(page.dataRegion() + record.offset,
                 record.before_image.data(),
